@@ -52,6 +52,9 @@ public class FdActivity extends Activity implements CvCameraViewListener2 {
     private CameraBridgeViewBase   mOpenCvCameraView;
     private DecorateView   decorateView;
 
+    private float mRelativeFaceSize = 0.5f;
+    private int mAbsoluteFaceSize = 0;
+
     private boolean isDebug = false;
 
     private BaseLoaderCallback  mLoaderCallback = new BaseLoaderCallback(this) {
@@ -184,20 +187,50 @@ public class FdActivity extends Activity implements CvCameraViewListener2 {
     }
 
     private void processNew(CvCameraViewFrame inputFrame) {
+        Rect faceRect, eyeRect, eyeDetectRect = null;
+        MatOfRect face = new MatOfRect();
         mRgba = inputFrame.rgba();
         mGray = inputFrame.gray();
 
-        Rect eyeRect = null;
+        if (mAbsoluteFaceSize == 0) {
+            int height = mGray.rows();
+            if (Math.round(height * mRelativeFaceSize) > 0) {
+                mAbsoluteFaceSize = Math.round(height * mRelativeFaceSize);
+            }
+
+        }
+
+        // Detect face
+        if (mJavaDetector != null) {
+            mJavaDetector.detectMultiScale(mGray, face, 1.2, 2, Objdetect.CASCADE_FIND_BIGGEST_OBJECT | Objdetect.CASCADE_SCALE_IMAGE, // TODO: objdetect.CV_HAAR_SCALE_IMAGE
+                    new Size(mAbsoluteFaceSize, mAbsoluteFaceSize), new Size());
+        }
+        Rect[] facesArray = face.toArray();
+        if (facesArray.length > 0) {
+            faceRect = facesArray[0];
+            eyeDetectRect = new Rect(faceRect.x + faceRect.width / 10,
+                    (int) (faceRect.y + (faceRect.height / 4.5)), faceRect.width - 2 * faceRect.width / 10,
+                    (int) (faceRect.height / 3.0));
+            if (isDebug) {
+                Imgproc.rectangle(mRgba, eyeDetectRect.tl(), eyeDetectRect.br(),
+                        MATCH_RECT_COLOR, 3);
+            }
+        }
+
+        if (eyeDetectRect == null) {
+            decorateView.clearCanvas();
+            return;
+        }
 
         if (eyeTemplate == null || eyeTemplate.rows() == 0 || eyeTemplate.cols() == 0) {
-            eyeRect = getEyeTemplate(mJavaDetectorEye);
+            eyeRect = getEyeTemplate(mJavaDetectorEye, eyeDetectRect);
         } else {
             // Learning finished, use the new templates for template
             // matching
-            eyeRect = matchEye(eyeTemplate, TM_SQDIFF_NORMED);
+            eyeRect = matchEye(eyeTemplate, TM_SQDIFF_NORMED, eyeDetectRect);
             if (eyeRect == null) {
                 // in case match fail, try again a detection
-                eyeRect = getEyeTemplate(mJavaDetectorEye);
+                eyeRect = getEyeTemplate(mJavaDetectorEye, eyeDetectRect);
             }
         }
 
@@ -210,9 +243,10 @@ public class FdActivity extends Activity implements CvCameraViewListener2 {
         }
     }
 
-    private Rect getEyeTemplate(CascadeClassifier clasificator) {
+    private Rect getEyeTemplate(CascadeClassifier clasificator, Rect area) {
         MatOfRect eyes = new MatOfRect();
-        clasificator.detectMultiScale(mGray, eyes, 1.15, 2,
+        Mat mROI = mGray.submat(area);
+        clasificator.detectMultiScale(mROI, eyes, 1.15, 2,
                 Objdetect.CASCADE_FIND_BIGGEST_OBJECT
                         | Objdetect.CASCADE_SCALE_IMAGE, new Size(30, 30),
                 new Size());
@@ -220,6 +254,8 @@ public class FdActivity extends Activity implements CvCameraViewListener2 {
         Rect[] eyesArray = eyes.toArray();
         if (eyesArray.length > 0) {
             Rect e = eyesArray[0];
+            e.x += area.x;
+            e.y += area.y;
             if (isDebug) {
                 Imgproc.rectangle(mRgba, e.tl(), e.br(), DETECT_RECT_COLOR, 2);
             }
@@ -230,10 +266,10 @@ public class FdActivity extends Activity implements CvCameraViewListener2 {
         return null;
     }
 
-    private Rect matchEye(Mat mTemplate, int type) {
+    private Rect matchEye(Mat mTemplate, int type, Rect area) {
         Point matchLoc;
         double percentage;
-        Mat mROI = mGray;
+        Mat mROI = mGray.submat(area);
         int result_cols = mROI.cols() - mTemplate.cols() + 1;
         int result_rows = mROI.rows() - mTemplate.rows() + 1;
         // Check for bad template size
@@ -280,8 +316,8 @@ public class FdActivity extends Activity implements CvCameraViewListener2 {
             return null;
         }
 
-        Point matchLoc_tx = new Point(matchLoc.x, matchLoc.y);
-        Point matchLoc_ty = new Point(matchLoc.x + mTemplate.cols(), matchLoc.y + mTemplate.rows());
+        Point matchLoc_tx = new Point(matchLoc.x + area.x, matchLoc.y + area.y);
+        Point matchLoc_ty = new Point(matchLoc.x + mTemplate.cols() + area.x, matchLoc.y + mTemplate.rows() + area.y);
 
         if (isDebug) {
             Imgproc.rectangle(mRgba, matchLoc_tx, matchLoc_ty, MATCH_RECT_COLOR);
